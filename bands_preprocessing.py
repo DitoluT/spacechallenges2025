@@ -5,81 +5,20 @@ import matplotlib.pyplot as plt
 import glob
 import pickle
 from rasterio.warp import reproject, Resampling
-import pickle
-
-# reading all bands from data image
-def read_all_bands(base_path: str):
-    """
-    Read all available Sentinel-2 bands and resample them to 10m resolution
-    
-    Args:
-        base_path (str): Base path to the Sentinel-2 product
-    
-    Returns:
-        dict: Dictionary with structure:
-              {
-                  'data': numpy array with shape (height, width, 12) containing all band data at 10m resolution,
-                  'profile': rasterio profile with geospatial metadata (unified for all bands at 10m),
-                  'band_names': list of all 12 band names in order,
-                  'band_order': dict mapping array index to band name,
-                  'resampling_info': dict with resampling details for each band
-              }
-    """
-    
-    # Define all available Sentinel-2 LEVEL 2A bands with their native resolutions
-    # Note: can be changed as needed (e.g., if we use L1C)
-    all_bands = [
-        'B01',  # Coastal aerosol - 60m
-        'B02',  # Blue - 10m
-        'B03',  # Green - 10m
-        'B04',  # Red - 10m
-        'B05',  # Vegetation Red Edge - 20m
-        'B06',  # Vegetation Red Edge - 20m
-        'B07',  # Vegetation Red Edge - 20m
-        'B08',  # NIR - 10m
-        'B8A',  # Vegetation Red Edge - 20m
-        'B09',  # Water vapour - 60m
-        'B11',  # SWIR - 20m
-        'B12'   # SWIR - 20m
-    ]
-    
-    # Define native resolutions for each band
-    native_resolutions = [
-        '60m',  # B01
-        '10m',  # B02
-        '10m',  # B03
-        '10m',  # B04
-        '20m',  # B05
-        '20m',  # B06
-        '20m',  # B07
-        '10m',  # B08
-        '20m',  # B8A
-        '60m',  # B09
-        '20m',  # B11
-        '20m'   # B12
-    ]
-    
-    print(f"Reading all available Sentinel-2 bands from: {base_path}")
-    print("Note: B10 (Cirrus) is not available in L2A products")
-    print("All bands will be resampled to 10m resolution")
-    
-    # Use the existing read_sentinel2_bands function with all bands and their native resolutions
-    result = read_sentinel2_bands(base_path, all_bands, native_resolutions)
-    
-    return result
 
 
 #---------------------------------------------------------------------------------
 
-# reading specific bands data
-def read_sentinel2_bands(base_path:str, band_list:list, resolution_list:list):
+# reading specific bands data from Sentinel-2 Level 1C format
+def read_sent2_1c_bands(base_path: str, 
+                        band_list:list=['B01', 'B02', 'B03', 'B4', 'B05', 'B06', 'B07', 
+                                        'B08', 'B8A', 'B09', 'B10', 'B11', 'B12']):
     """
-    Read specific bands from a Sentinel-2 dataset and resample to common resolution if needed
+    Read specific bands from a Sentinel-2 Level 1C dataset and resample to common resolution if needed
     
     Args:
-        base_path (str): Base path to the Sentinel-2 product
-        band_list (list): List of bands to read (e.g., ['B08', 'B12'])
-        resolution_list (list): Resolution list to read from, for each band(10m, 20m, 60m)
+        base_path (str): Base path name to the Sentinel-2 Level 1C product in the DATASETS folder
+        band_list (list): List of bands to read (by default it reads all bands)
     
     Returns:
         dict: Dictionary with structure:
@@ -90,13 +29,27 @@ def read_sentinel2_bands(base_path:str, band_list:list, resolution_list:list):
                   'band_order': dict mapping array index to band name,
                   'resampling_info': dict with resampling details (if resampling occurred)
               }
-              If multiple resolutions are detected, all bands will be resampled to the highest 
-              resolution (lowest numerical value) and stacked together.
+              All bands will be resampled to the highest resolution (lowest numerical value) and stacked together.
     """
+    
+    # Define native resolutions for Sentinel-2 Level 1C bands
+    band_native_resolutions = {
+        'B01': 60,  # Coastal aerosol
+        'B02': 10,  # Blue
+        'B03': 10,  # Green
+        'B04': 10,  # Red
+        'B05': 20,  # Vegetation Red Edge
+        'B06': 20,  # Vegetation Red Edge
+        'B07': 20,  # Vegetation Red Edge
+        'B08': 10,  # NIR
+        'B8A': 20,  # Vegetation Red Edge
+        'B09': 60,  # Water vapour
+        'B10': 60,  # Cirrus (available in L1C)
+        'B11': 20,  # SWIR
+        'B12': 20   # SWIR
+    }
 
-    if not len(band_list) == len(resolution_list):
-        raise ValueError(f"Bands and resolutions lists do not match.")               
-
+    base_path = os.path.join('DATASETS', base_path)
     # Find the granule folder (there should be only one)
     granule_path = os.path.join(base_path, 'GRANULE')
     granule_folders = [f for f in os.listdir(granule_path) if os.path.isdir(os.path.join(granule_path, f))]
@@ -105,12 +58,22 @@ def read_sentinel2_bands(base_path:str, band_list:list, resolution_list:list):
         raise ValueError(f"No granule folder found in {granule_path}")               
     
     granule_folder = os.path.join(granule_path, granule_folders[0])  # Take the first (and usually only) granule
+    img_data_path = os.path.join(granule_folder, 'IMG_DATA')
+    
+    if not os.path.exists(img_data_path):
+        raise ValueError(f"IMG_DATA folder not found in {granule_folder}")
+    
     bands_data = {}
     
-    for i, band in enumerate(band_list):
-        img_data_path = os.path.join(granule_folder, 'IMG_DATA', f'R{resolution_list[i]}')
-        # Search for band files in the folder
-        band_files = glob.glob(os.path.join(img_data_path, f'*_{band}_{resolution_list[i]}.jp2'))
+    # Read each requested band
+    for band in band_list:
+        if band not in band_native_resolutions:
+            print(f"Warning: Band {band} not recognized. Skipping...")
+            continue
+            
+        # Search for band files in the IMG_DATA folder
+        # Level 1C format: T{tile_id}_{timestamp}_{band}.jp2
+        band_files = glob.glob(os.path.join(img_data_path, f'*_{band}.jp2'))
         
         if band_files:
             band_file = band_files[0]  # Take the first match
@@ -120,43 +83,51 @@ def read_sentinel2_bands(base_path:str, band_list:list, resolution_list:list):
                 bands_data[band] = {
                     'data': src.read(1).astype(np.float32),
                     'profile': src.profile,
-                    'file_path': str(band_file)
+                    'file_path': str(band_file),
+                    'native_resolution': band_native_resolutions[band]
                 }
         else:
             print(f"Warning: Band {band} not found in {img_data_path}")
     
+    if not bands_data:
+        return {'data': None, 'profile': None, 'band_names': [], 'band_order': {}}
 
     # RESAMPLING PART
-    # Check if all bands have the same resolution and resample if needed
-    if len(set(resolution_list)) > 1:
-        # Find the highest resolution (lowest numerical value)
-        target_resolution = min([int(res.rstrip('m')) for res in resolution_list])
-        target_res_str = f"{target_resolution}m"
+    # Find the highest resolution (lowest numerical value) among the requested bands
+    resolutions = [band_native_resolutions[band] for band in bands_data.keys()]
+    target_resolution = min(resolutions)
+    target_res_str = f"{target_resolution}m"
+    
+    print(f"Target resolution: {target_res_str}")
+    
+    # Find a reference band at the target resolution for spatial reference
+    reference_band = None
+    reference_profile = None
+    for band_name, band_info in bands_data.items():
+        if band_info['native_resolution'] == target_resolution:
+            reference_band = band_name
+            reference_profile = band_info['profile']
+            break
+    
+    if reference_band is None:
+        raise ValueError(f"No reference band found at target resolution {target_res_str}")
+    
+    print(f"Using band {reference_band} as reference for {target_res_str} resolution")
+    
+    # Check if resampling is needed
+    needs_resampling = any(band_info['native_resolution'] != target_resolution 
+                          for band_info in bands_data.values())
+    
+    if needs_resampling:
         print(f"Multiple resolutions detected. Resampling all bands to {target_res_str}")
         
-        # Find a reference band at the target resolution for spatial reference
-        reference_band = None
-        reference_profile = None
-        for i, res in enumerate(resolution_list):
-            if int(res.rstrip('m')) == target_resolution:
-                reference_band = band_list[i]
-                reference_profile = bands_data[reference_band]['profile']
-                break
-        
-        # If no band exists at target resolution, create reference from the lowest resolution band
-        if reference_band is None:
-            # Find the band with the highest current resolution
-            min_res_idx = resolution_list.index(min(resolution_list, key=lambda x: int(x.rstrip('m'))))
-            reference_band = band_list[min_res_idx]
-            reference_profile = bands_data[reference_band]['profile']
-        
-        # Resample all bands to target resolution
+        # Resample bands that don't match the target resolution
         resampled_bands_data = {}
         for band_name, band_info in bands_data.items():
             if band_info['profile']['width'] != reference_profile['width'] or \
                band_info['profile']['height'] != reference_profile['height']:
                 
-                print(f"Resampling band {band_name} to {target_res_str}")
+                print(f"Resampling band {band_name} from {band_info['native_resolution']}m to {target_res_str}")
                 
                 # Create output array with target dimensions
                 resampled_data = np.zeros((reference_profile['height'], reference_profile['width']), dtype=np.float32)
@@ -183,55 +154,54 @@ def read_sentinel2_bands(base_path:str, band_list:list, resolution_list:list):
                     'data': resampled_data,
                     'profile': resampled_profile,
                     'file_path': band_info['file_path'],
-                    'original_resolution': next(resolution_list[i] for i, b in enumerate(band_list) if b == band_name),
+                    'original_resolution': f"{band_info['native_resolution']}m",
                     'resampled_to': target_res_str
                 }
             else:
                 # Band already at target resolution
                 resampled_bands_data[band_name] = band_info.copy()
-                resampled_bands_data[band_name]['original_resolution'] = next(resolution_list[i] for i, b in enumerate(band_list) if b == band_name)
+                resampled_bands_data[band_name]['original_resolution'] = f"{band_info['native_resolution']}m"
                 resampled_bands_data[band_name]['resampled_to'] = target_res_str
         
         bands_data = resampled_bands_data
         print(f"All bands resampled to {target_res_str} resolution")
-    
-
+    else:
+        # All bands already at the same resolution, just add resolution info
+        for band_name, band_info in bands_data.items():
+            band_info['original_resolution'] = f"{band_info['native_resolution']}m"
+            band_info['resampled_to'] = target_res_str
 
     # Stack all bands into a single numpy array and return with unified profile
-    if bands_data:
-        # Get the reference profile (all bands should have the same profile after resampling)
-        reference_profile = next(iter(bands_data.values()))['profile']
-        
-        # Stack all band data into a 3D array (height, width, bands)
-        band_arrays = []
-        band_names = []
-        for band_name in sorted(bands_data.keys()):  # Sort to ensure consistent order
-            band_arrays.append(bands_data[band_name]['data'])
-            band_names.append(band_name)
-        
-        stacked_data = np.stack(band_arrays, axis=2)
-        
-        # Create result structure
-        result = {
-            'data': stacked_data,
-            'profile': reference_profile,
-            'band_names': band_names,
-            'band_order': {i: name for i, name in enumerate(band_names)}
+    # Get the reference profile (all bands should have the same profile after resampling)
+    reference_profile = next(iter(bands_data.values()))['profile']
+    
+    # Stack all band data into a 3D array (height, width, bands)
+    band_arrays = []
+    band_names = []
+    for band_name in sorted(bands_data.keys()):  # Sort to ensure consistent order
+        band_arrays.append(bands_data[band_name]['data'])
+        band_names.append(band_name)
+    
+    stacked_data = np.stack(band_arrays, axis=2)
+    
+    # Create result structure
+    result = {
+        'data': stacked_data,
+        'profile': reference_profile,
+        'band_names': band_names,
+        'band_order': {i: name for i, name in enumerate(band_names)}
+    }
+    
+    # Add resampling information
+    result['resampling_info'] = {
+        band_name: {
+            'original_resolution': band_info.get('original_resolution', 'unknown'),
+            'resampled_to': band_info.get('resampled_to', 'unknown')
         }
-        
-        # Add resampling information if available
-        if 'resampled_to' in next(iter(bands_data.values())):
-            result['resampling_info'] = {
-                band_name: {
-                    'original_resolution': band_info.get('original_resolution', 'unknown'),
-                    'resampled_to': band_info.get('resampled_to', 'unknown')
-                }
-                for band_name, band_info in bands_data.items()
-            }
-        
-        return result
-    else:
-        return {'data': None, 'profile': None, 'band_names': [], 'band_order': {}}
+        for band_name, band_info in bands_data.items()
+    }
+    
+    return result
 
 
 #--------------------------------------------------------------------------------
@@ -242,7 +212,7 @@ def save_data_profile(bands_data, path:str, name:str):
     Save the stacked bands data and profile
     
     Args:
-        bands_data (dict): Result from read_sentinel2_bands with 'data' and 'profile' keys
+        bands_data (dict): Result from read_sent2_1c_bands with 'data' and 'profile' keys
         path (str): Directory path to save files
         name (str): Base name for the files
     """
@@ -276,7 +246,7 @@ def get_ndvi_from_bands(bands_data):
     Calculate NDVI from pre-extracted bands data
     
     Args:
-        bands_data: Dictionary from read_sentinel2_bands containing band data
+        bands_data: Dictionary from read_sent2_1c_bands containing band data
     
     Returns:
         numpy.ndarray: NDVI data with shape (height, width, 1)
@@ -308,9 +278,91 @@ def get_ndvi_from_bands(bands_data):
 # Backward compatibility function
 def get_ndvi(img_path):
     """Legacy function for backward compatibility - reads bands and calculates NDVI"""
-    nir_r = read_sentinel2_bands(img_path, ['B08', 'B04'], ['10m', '10m'])
+    nir_r = read_sent2_1c_bands(img_path, ['B08', 'B04'], ['10m', '10m'])
     return {'data': get_ndvi_from_bands(nir_r), 'profile': nir_r['profile']}
 
+
+#--------------------------------------------------------------------------------
+
+# Unified function to compute vegetation indices from single .npy patch file
+def compute_vegetation_index_from_patch(patch_path: str, band_names: list, index_type: str = 'ndvi'):
+    """
+    Compute vegetation index (NDVI or NDMI) from a single .npy patch file containing stacked bands
+    
+    Args:
+        patch_path (str): Path to the .npy patch file
+        band_names (list): List of band names in the order they appear in the patch
+        index_type (str): Type of index to compute ('ndvi' or 'ndmi')
+    
+    Returns:
+        numpy.ndarray: Vegetation index data with shape (height, width, 1)
+    """
+    # Load the patch data
+    patch_data = np.load(patch_path)
+    
+    # Define band requirements for each index
+    index_configs = {
+        'ndvi': {'bands': ['B08', 'B04'], 'names': ['NIR', 'Red']},
+        'ndmi': {'bands': ['B08', 'B11'], 'names': ['NIR', 'SWIR']}
+    }
+    
+    if index_type.lower() not in index_configs:
+        raise ValueError(f"Unsupported index type: {index_type}. Supported types: {list(index_configs.keys())}")
+    
+    config = index_configs[index_type.lower()]
+    required_bands = config['bands']
+    band_descriptions = config['names']
+    
+    # Find required band indices
+    try:
+        band1_idx = band_names.index(required_bands[0])
+        band2_idx = band_names.index(required_bands[1])
+    except ValueError:
+        raise ValueError(f"{required_bands[0]} ({band_descriptions[0]}) or {required_bands[1]} ({band_descriptions[1]}) bands not found in the provided band names")
+    
+    # Extract the specific bands
+    band1_data = patch_data[:, :, band1_idx]
+    band2_data = patch_data[:, :, band2_idx]
+    
+    # Compute the index: (band1 - band2) / (band1 + band2)
+    denom = band1_data + band2_data
+    denom[denom == 0] = 1e-6  # Avoid division by zero
+    index_patch = (band1_data - band2_data) / denom
+    
+    # Add channel dimension to make it 3D (height, width, 1)
+    index_patch = index_patch[:, :, np.newaxis]
+    
+    return index_patch
+
+
+def save_vegetation_index_patch(patch_path: str, band_names: list, output_dir: str, index_type: str = 'ndvi'):
+    """
+    Compute and save vegetation index for a single patch
+    
+    Args:
+        patch_path (str): Path to the input .npy patch file
+        band_names (list): List of band names in order
+        output_dir (str): Directory to save the index patch
+        index_type (str): Type of index to compute ('ndvi' or 'ndmi')
+    
+    Returns:
+        str: Path to the saved index patch file
+    """
+    # Compute the vegetation index
+    index_patch = compute_vegetation_index_from_patch(patch_path, band_names, index_type)
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Generate output filename based on input filename
+    input_filename = os.path.basename(patch_path)
+    output_filename = input_filename.replace('_patch_', f'_{index_type.lower()}_')
+    output_path = os.path.join(output_dir, output_filename)
+    
+    # Save index patch
+    np.save(output_path, index_patch)
+    
+    return output_path
 
 #--------------------------------------------------------------------------------
 
@@ -352,7 +404,7 @@ def get_ndmi_from_bands(bands_data):
 # Backward compatibility function
 def get_ndmi(img_path):
     """Legacy function for backward compatibility - reads bands and calculates NDMI"""
-    nir_swir = read_sentinel2_bands(img_path, ['B08', 'B11'], ['10m', '20m'])
+    nir_swir = read_sent2_1c_bands(img_path, ['B08', 'B11'])
     return {'data': get_ndmi_from_bands(nir_swir), 'profile': nir_swir['profile']}
 
 
@@ -456,6 +508,24 @@ def extract_data_labels_from_bands(pre_bands_data, post_bands_data, output_dir: 
     print("- dnbr_normalized.npy (NumPy array)")
     print("- dnbr_binary_map.npy (NumPy array)")
 
+    # Visualize the heatmap and binary map side-by-side
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # Display dNBR heatmap
+    im1 = ax1.imshow(dnbr_img[:, :, 0], cmap='hot', vmin=0, vmax=1)
+    ax1.set_title('dNBR Heatmap (Normalized)', fontsize=12)
+    ax1.axis('off')
+    plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
+    
+    # Display binary map
+    im2 = ax2.imshow(dnbr_map[:, :, 0], cmap='gray', vmin=0, vmax=1)
+    ax2.set_title(f'dNBR Binary Map (thresh={thresh})', fontsize=12)
+    ax2.axis('off')
+    plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
+    
+    plt.tight_layout()
+    plt.show()
+
     return dnbr_img
 
 # Backward compatibility function
@@ -465,7 +535,7 @@ def extract_data_labels(img_list: list, output_dir: str, thresh: float = 0.6):
     profiles = {}
 
     for i, img_path in enumerate(img_list):
-        nir_swir = read_sentinel2_bands(img_path, ['B08', 'B12'], ['10m', '20m'])
+        nir_swir = read_sent2_1c_bands(img_path, ['B08', 'B12'])
 
         b08_data = nir_swir['data'][:, :, 0]
         b08_profile = nir_swir['profile']
@@ -513,129 +583,39 @@ def extract_data_labels(img_list: list, output_dir: str, thresh: float = 0.6):
 
 #--------------------------------------------------------------------------------
 
-# full processing pipeline to get all the patches data needed (chosen bands, ndvi, ndmi, labels in [0, 1])
-def full_sentinel2_data_pipeline(dataset_name: str, 
-                                   base_path: str = '/home/dario/Desktop/FlameSentinels',
-                                   bands_to_process: list = ['B02', 'B03', 'B04', 'B08', 'B11', 'B12'],
-                                   band_resolutions: list = ['10m', '10m', '10m', '10m', '20m', '20m'],
-                                   patch_size: tuple = (256, 256),
-                                   threshold: float = 0.6):
+# Utility functions to process entire directories of patches
+# Unified function to process directories of patches for vegetation indices
+def process_patches_directory(patches_dir: str, band_names: list, output_dir: str, index_type: str = 'ndvi'):
     """
-    Complete processing pipeline for satellite data including bands, NDVI, NDMI, and labels extraction.
+    Process all .npy patch files in a directory to compute vegetation indices
     
     Args:
-        dataset_name (str): Common name for the dataset folder in which you should save (e.g., 'turkey', 'california', etc.). 
-
-          Ideally the folder downloaded from Copernicus should be extracted and then renamed to <country>_pre or <country>_post
-          And it should be placed into the base_path folder
-
-        base_path (str): Base directory path where data folders are located
-        bands_to_process (list): List of bands to process (to get full data input, together with ndvi and ndmi)
-        band_resolutions (list): Corresponding resolutions for each band
-        patch_size (tuple): Size of patches to extract (height, width)
-        threshold (float): Threshold for binary dNBR classification
+        patches_dir (str): Directory containing .npy patch files
+        band_names (list): List of band names in order they appear in patches
+        output_dir (str): Directory to save index patches
+        index_type (str): Type of index to compute ('ndvi' or 'ndmi')
+    
+    Returns:
+        list: List of paths to saved index patch files
     """
+    # Find all .npy files in the patches directory
+    patch_files = glob.glob(os.path.join(patches_dir, '*.npy'))
     
-    print(f"=== Starting processing pipeline for dataset: {dataset_name} ===")
+    if not patch_files:
+        print(f"No .npy files found in {patches_dir}")
+        return []
     
-    # Define paths
-    post_fire_path = os.path.join(base_path, f'{dataset_name}_post')
-    pre_fire_path = os.path.join(base_path, f'{dataset_name}_pre')
-    full_img_path = os.path.join(base_path, f'{dataset_name}_full_img_results')
+    print(f"Processing {len(patch_files)} patches for {index_type.upper()} computation...")
     
-    # Output patch directories
-    patches_bands_path = os.path.join(base_path, 'PATCHES_BANDS')
-    patches_ndvi_path = os.path.join(base_path, 'PATCHES_NDVI') 
-    patches_ndmi_path = os.path.join(base_path, 'PATCHES_NDMI')
-    patches_labels_path = os.path.join(base_path, 'PATCHES_LABELS')
+    saved_paths = []
+    for patch_file in patch_files:
+        try:
+            output_path = save_vegetation_index_patch(patch_file, band_names, output_dir, index_type)
+            saved_paths.append(output_path)
+        except Exception as e:
+            print(f"Error processing {patch_file}: {e}")
     
-    # Step 1: Process bands data (read both pre and post fire data)
-    print("\n--- Step 1: Processing bands data ---")
-    print("Reading pre-fire bands...")
-    pre_bands = read_sentinel2_bands(pre_fire_path, bands_to_process, band_resolutions)
-    print("Reading post-fire bands...")
-    post_bands = read_sentinel2_bands(post_fire_path, bands_to_process, band_resolutions)
-    
-    # Print information about the result
-    print("Band names:", pre_bands['band_names'])
-    print("Data shape:", pre_bands['data'].shape)
-    print("Band order:", pre_bands['band_order'])
-    if 'resampling_info' in pre_bands:
-        print("Resampling info:", pre_bands['resampling_info'])
-    
-    # Save bands data (using pre-fire as reference)
-    saved_npy_path = save_data_profile(pre_bands, full_img_path, f'{dataset_name}_pre')
-    bands_data = np.load(saved_npy_path)
-    
-    # Extract patches from bands
-    num_bands = len(bands_to_process)
-    extract_patches_with_padding(bands_data, dataset_name, (*patch_size, num_bands), patches_bands_path)
-    
-    # Step 2: Process NDVI and NDMI using pre-extracted bands data
-    print("\n--- Step 2: Processing NDVI and NDMI ---")
-    
-    # Try to use optimized functions first, fall back to path-based functions if bands are missing
-    try:
-        print("Attempting to compute NDVI from pre-extracted bands...")
-        ndvi = get_ndvi_from_bands(pre_bands)  # Use optimized function
-        print("✓ NDVI computed from pre-extracted bands")
-    except ValueError as e:
-        print(f"⚠ Warning: {e}")
-        print("Falling back to reading bands directly from path for NDVI...")
-        ndvi_result = get_ndvi(pre_fire_path)  # Fallback to backup function
-        ndvi = ndvi_result['data']
-        print("✓ NDVI computed from direct path reading")
-    
-    try:
-        print("Attempting to compute NDMI from pre-extracted bands...")
-        ndmi = get_ndmi_from_bands(pre_bands)  # Use optimized function
-        print("✓ NDMI computed from pre-extracted bands")
-    except ValueError as e:
-        print(f"⚠ Warning: {e}")
-        print("Falling back to reading bands directly from path for NDMI...")
-        ndmi_result = get_ndmi(pre_fire_path)  # Fallback to backup function
-        ndmi = ndmi_result['data']
-        print("✓ NDMI computed from direct path reading")
-    
-    # Create temp directory and save indices
-    os.makedirs(full_img_path, exist_ok=True)
-    np.save(os.path.join(full_img_path, f'{dataset_name}_NDVI.npy'), ndvi)
-    np.save(os.path.join(full_img_path, f'{dataset_name}_NDMI.npy'), ndmi)
-    
-    # Load and extract patches
-    ndvi_np = np.load(os.path.join(full_img_path, f'{dataset_name}_NDVI.npy'))
-    ndmi_np = np.load(os.path.join(full_img_path, f'{dataset_name}_NDMI.npy'))
-    
-    extract_patches_with_padding(ndvi_np, dataset_name, (*patch_size, 1), patches_ndvi_path)
-    extract_patches_with_padding(ndmi_np, dataset_name, (*patch_size, 1), patches_ndmi_path)
-    
-    # Step 3: Process labels (dNBR) using pre-extracted bands data
-    print("\n--- Step 3: Processing labels (dNBR) ---")
-    
-    # Try to use optimized function first, fall back to path-based function if bands are missing
-    try:
-        print("Attempting to compute dNBR from pre-extracted bands...")
-        extract_data_labels_from_bands(pre_bands, post_bands, full_img_path, threshold)  # Use optimized function
-        print("✓ dNBR computed from pre-extracted bands")
-    except ValueError as e:
-        print(f"⚠ Warning: {e}")
-        print("Falling back to reading bands directly from paths for dNBR...")
-        extract_data_labels([pre_fire_path, post_fire_path], full_img_path, threshold)  # Fallback to backup function
-        print("✓ dNBR computed from direct path reading")
-    
-    # Load dNBR data and extract patches
-    dnbr_normmap = np.load(os.path.join(full_img_path, 'dnbr_normalized.npy'))
-    extract_patches_with_padding(dnbr_normmap, dataset_name, (*patch_size, 1), patches_labels_path)
-    
-    print(f"\n=== Processing pipeline completed for dataset: {dataset_name} ===")
-    print(f"Generated patches in:")
-    print(f"  - Bands: {patches_bands_path}")
-    print(f"  - NDVI: {patches_ndvi_path}")
-    print(f"  - NDMI: {patches_ndmi_path}")
-    print(f"  - Labels: {patches_labels_path}")
+    print(f"Successfully processed {len(saved_paths)} patches for {index_type.upper()}")
+    return saved_paths
 
 
-if __name__ == '__main__':
-    # Example usage: process the turkey dataset
-    full_sentinel2_data_pipeline('turkey')
-    
