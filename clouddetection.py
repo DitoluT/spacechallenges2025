@@ -7,13 +7,13 @@ from s2cloudless import S2PixelCloudDetector
 os.chdir('/home/dario/Desktop/FlameSentinels')
 
 # Configuration
-CLOUD_THRESHOLD = 0.4  # S2PixelCloudDetector threshold
+
 
 # Initialize cloud detector
 print("🔧 Initializing S2PixelCloudDetector...")
 print("✅ Cloud detector ready!")
 
-def patch_cloud_detection(patches_folder, cloud_threshold=0.6):
+def patch_cloud_detection(patches_folder, cloud_threshold=0.4):
     """
     Process a folder of patches, detect clouds, and move cloudy patches to separate folder.
     Uses S2PixelCloudDetector's built-in threshold for cloud detection.
@@ -61,7 +61,7 @@ def patch_cloud_detection(patches_folder, cloud_threshold=0.6):
         patch_batch = patch[np.newaxis, ...]  # Add batch dimension
         cloud_mask = detector.get_cloud_masks(patch_batch)[0]
         cloud_coverage = cloud_mask.sum() / cloud_mask.size
-        is_cloudy = cloud_mask.any()  # If any pixels are detected as cloudy
+        is_cloudy = cloud_coverage > cloud_threshold  # If more than 40% of pixels are cloudy
         
         patch_info = {
             'filename': filename,
@@ -129,7 +129,6 @@ def visualize_patch_results(results):
     # 1. Cloud coverage histogram
     coverages = [stat['cloud_coverage'] for stat in patch_stats]
     ax1.hist(coverages, bins=20, alpha=0.7, color='skyblue', edgecolor='black')
-    threshold_used = results.get('threshold_used', CLOUD_THRESHOLD)
     ax1.axvline(x=0.5, color='red', linestyle='--', linewidth=2, 
                 label=f'Visual Reference (50%)')
     ax1.set_xlabel('Cloud Coverage')
@@ -206,7 +205,6 @@ def visualize_patch_results(results):
         print(f"  Range: {np.min(cloudy_coverages)*100:.1f}% - {np.max(cloudy_coverages)*100:.1f}%")
         print(f"  Standard deviation: {np.std(cloudy_coverages)*100:.1f}%")
     
-    print(f"\nThreshold used: {results.get('threshold_used', CLOUD_THRESHOLD)}")
     print(f"Data efficiency: {results['acceptance_rate']:.1f}% of patches retained")
     print(f"Cloudy patches location: {results['cloudy_dir']}")
     print(f"Note: S2PixelCloudDetector uses built-in threshold for cloud detection")
@@ -225,7 +223,7 @@ if __name__ == '__main__':
 
     if os.path.exists(PATCHES_FOLDER):
         # Run the cloud detection
-        results = patch_cloud_detection(PATCHES_FOLDER, CLOUD_THRESHOLD)
+        results = patch_cloud_detection(PATCHES_FOLDER, 0.4)
     else:
         print(f"❌ Patches folder not found: {PATCHES_FOLDER}")
         results = None
